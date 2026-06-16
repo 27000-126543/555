@@ -2,7 +2,7 @@ import { AppDataSource } from '../config/database';
 import { WorkOrder, WorkOrderStatus } from '../entities/WorkOrder';
 import { Inspection, FaultLevel } from '../entities/Inspection';
 import { User, UserRole } from '../entities/User';
-import { StreetLight } from '../entities/StreetLight';
+import { StreetLight, StreetLightStatus } from '../entities/StreetLight';
 import { Notification, NotificationType, RelatedType } from '../entities/Notification';
 import { MaintenanceRecord, PartUsed } from '../entities/MaintenanceRecord';
 import { Between, FindOptionsWhere, In } from 'typeorm';
@@ -313,6 +313,14 @@ export class WorkOrderService {
       throw new Error('路灯编码不匹配，请确认位置');
     }
 
+    const streetLight = await streetLightRepository.findOne({
+      where: { id: workOrder.streetLightId },
+    });
+    if (streetLight) {
+      streetLight.status = StreetLightStatus.MAINTAINING;
+      await streetLightRepository.save(streetLight);
+    }
+
     const maintenanceRecord = maintenanceRecordRepository.create({
       workOrderId: orderId,
       maintainerId,
@@ -410,11 +418,19 @@ export class WorkOrderService {
         where: { id: workOrder.streetLightId },
       });
       if (streetLight) {
-        streetLight.status = 'normal' as any;
+        streetLight.status = StreetLightStatus.NORMAL;
         await streetLightRepository.save(streetLight);
       }
     } else {
       workOrder.status = WorkOrderStatus.PROCESSING;
+
+      const streetLight = await streetLightRepository.findOne({
+        where: { id: workOrder.streetLightId },
+      });
+      if (streetLight && streetLight.status !== StreetLightStatus.MAINTAINING) {
+        streetLight.status = StreetLightStatus.MAINTAINING;
+        await streetLightRepository.save(streetLight);
+      }
     }
 
     const savedOrder = await workOrderRepository.save(workOrder);

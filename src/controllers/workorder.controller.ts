@@ -94,7 +94,7 @@ export class WorkOrderController {
         return res.status(HttpStatus.FORBIDDEN).json(error('只有维修员可以接单', HttpStatus.FORBIDDEN));
       }
 
-      const workOrder = await WorkOrderService.acceptWorkOrder(id, user.userId);
+      const workOrder = await WorkOrderService.acceptWorkOrder(id, user.id);
 
       if (!workOrder) {
         return res.status(HttpStatus.NOT_FOUND).json(error('工单不存在', HttpStatus.NOT_FOUND));
@@ -120,7 +120,7 @@ export class WorkOrderController {
         return res.status(HttpStatus.BAD_REQUEST).json(error('缺少路灯编码', HttpStatus.BAD_REQUEST));
       }
 
-      const workOrder = await WorkOrderService.startWorkOrder(id, user.userId, lightCode);
+      const workOrder = await WorkOrderService.startWorkOrder(id, user.id, lightCode);
 
       if (!workOrder) {
         return res.status(HttpStatus.NOT_FOUND).json(error('工单不存在', HttpStatus.NOT_FOUND));
@@ -155,7 +155,7 @@ export class WorkOrderController {
         laborCost: laborCost ? parseFloat(laborCost) : 0,
       };
 
-      const workOrder = await WorkOrderService.completeWorkOrder(id, user.userId, data);
+      const workOrder = await WorkOrderService.completeWorkOrder(id, user.id, data);
 
       if (!workOrder) {
         return res.status(HttpStatus.NOT_FOUND).json(error('工单不存在', HttpStatus.NOT_FOUND));
@@ -181,7 +181,7 @@ export class WorkOrderController {
         return res.status(HttpStatus.BAD_REQUEST).json(error('缺少审核结果', HttpStatus.BAD_REQUEST));
       }
 
-      const workOrder = await WorkOrderService.verifyWorkOrder(id, user.userId, pass, remark || '');
+      const workOrder = await WorkOrderService.verifyWorkOrder(id, user.id, pass, remark || '');
 
       if (!workOrder) {
         return res.status(HttpStatus.NOT_FOUND).json(error('工单不存在', HttpStatus.NOT_FOUND));
