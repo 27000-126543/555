@@ -7,6 +7,7 @@ import { StreetLight, StreetLightStatus } from '../entities/StreetLight';
 import { User, UserRole } from '../entities/User';
 import { Notification, NotificationType, RelatedType } from '../entities/Notification';
 import { FindOptionsWhere, Between } from 'typeorm';
+import { NotificationService } from './notification.service';
 
 const workOrderRepository = AppDataSource.getRepository(WorkOrder);
 const maintenanceRecordRepository = AppDataSource.getRepository(MaintenanceRecord);
@@ -165,7 +166,7 @@ export class MaintenanceService {
       }
 
       if (workOrder.maintainerId !== maintainerId) {
-        throw new Error('无权处理此工单');
+        throw new Error('权限不足：只能完成您名下的工单');
       }
 
       if (workOrder.status !== WorkOrderStatus.PROCESSING) {
@@ -215,16 +216,7 @@ export class MaintenanceService {
 
       await transactionalEntityManager.save(workOrder);
 
-      const streetLight = await transactionalEntityManager.findOne(StreetLight, {
-        where: { id: workOrder.streetLightId },
-      });
-
-      if (streetLight) {
-        streetLight.status = StreetLightStatus.NORMAL;
-        await transactionalEntityManager.save(streetLight);
-      }
-
-      await this.sendNotification(workOrderId, `工单 ${workOrder.orderNo} 已完成，待审核`);
+      await this.sendNotification(workOrderId, workOrder.orderNo, maintainerId);
 
       return savedRecord;
     });
@@ -273,22 +265,24 @@ export class MaintenanceService {
     });
   }
 
-  private static async sendNotification(workOrderId: string, content: string): Promise<void> {
-    const admins = await userRepository.find({
-      where: { role: UserRole.ADMIN, status: true },
-    });
-
-    for (const admin of admins) {
-      const notification = notificationRepository.create({
-        userId: admin.id,
-        type: NotificationType.MAINTENANCE,
-        title: '维修完成通知',
-        content,
-        relatedId: workOrderId,
-        relatedType: RelatedType.WORK_ORDER,
-      });
-      await notificationRepository.save(notification);
-    }
+  private static async sendNotification(workOrderId: string, orderNo: string, maintainerId: string): Promise<void> {
+    const content = `工单 ${orderNo} 已完成，待审核`;
+    await NotificationService.createNotificationForRole(
+      UserRole.ADMIN,
+      NotificationType.MAINTENANCE,
+      '维修完成通知',
+      content,
+      workOrderId,
+      RelatedType.WORK_ORDER
+    );
+    await NotificationService.createNotification(
+      maintainerId,
+      NotificationType.MAINTENANCE,
+      '维修提交成功',
+      `您的工单 ${orderNo} 已提交审核，请等待管理员审核`,
+      workOrderId,
+      RelatedType.WORK_ORDER
+    );
   }
 }
 

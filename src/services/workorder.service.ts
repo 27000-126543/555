@@ -10,6 +10,8 @@ import { Between, FindOptionsWhere, In } from 'typeorm';
 const PDFDocument = require('pdfkit');
 import * as fs from 'fs';
 import * as path from 'path';
+import { NotificationService } from './notification.service';
+import { faultTypes, FaultType } from '../data/faultTypes';
 
 const workOrderRepository = AppDataSource.getRepository(WorkOrder);
 const userRepository = AppDataSource.getRepository(User);
@@ -55,7 +57,9 @@ interface MaintainerScore {
   currentWorkload: number;
   avgCompletionTime: number;
   sameArea: boolean;
-  hasSkill: boolean;
+  faultTypeMatchCount: number;
+  faultTypeAvgTime: number;
+  urgentBonus: number;
 }
 
 export class WorkOrderService {
@@ -75,6 +79,8 @@ export class WorkOrderService {
     }
 
     const isUrgent = inspection.faultLevel === FaultLevel.URGENT;
+    const targetFaultType = inspection.faultType;
+    const targetArea = streetLight.area;
     const scoredMaintainers: MaintainerScore[] = [];
 
     for (const maintainer of maintainers) {
@@ -85,48 +91,89 @@ export class WorkOrderService {
         },
       });
 
-      const completedOrders = await workOrderRepository.find({
+      const allCompletedOrders = await workOrderRepository.find({
         where: {
           maintainerId: maintainer.id,
           status: In([WorkOrderStatus.COMPLETED, WorkOrderStatus.VERIFIED]),
         },
-        select: ['createdAt', 'completedAt'],
+        select: ['createdAt', 'completedAt', 'faultType'],
       });
 
       let avgCompletionTime = 0;
-      if (completedOrders.length > 0) {
-        const totalTime = completedOrders.reduce((sum, order) => {
+      if (allCompletedOrders.length > 0) {
+        const totalTime = allCompletedOrders.reduce((sum, order) => {
           if (order.createdAt && order.completedAt) {
             return sum + (order.completedAt.getTime() - order.createdAt.getTime());
           }
           return sum;
         }, 0);
-        avgCompletionTime = totalTime / completedOrders.length;
+        avgCompletionTime = totalTime / allCompletedOrders.length;
       }
 
-      const sameArea = maintainer.area === streetLight.area;
-      const hasSkill = true;
+      const faultTypeOrders = allCompletedOrders.filter(o => o.faultType === targetFaultType);
+      const faultTypeMatchCount = faultTypeOrders.length;
+
+      let faultTypeAvgTime = 0;
+      if (faultTypeMatchCount > 0) {
+        const totalFaultTypeTime = faultTypeOrders.reduce((sum, order) => {
+          if (order.createdAt && order.completedAt) {
+            return sum + (order.completedAt.getTime() - order.createdAt.getTime());
+          }
+          return sum;
+        }, 0);
+        faultTypeAvgTime = totalFaultTypeTime / faultTypeMatchCount;
+      }
+
+      const sameArea = maintainer.area === targetArea;
 
       let score = 0;
 
       if (sameArea) {
-        score += 40;
+        score += 25;
       }
 
-      if (hasSkill) {
-        score += 30;
+      if (faultTypeMatchCount > 0) {
+        const experienceScore = Math.min(faultTypeMatchCount * 3, 25);
+        score += experienceScore;
+        if (faultTypeAvgTime > 0 && avgCompletionTime > 0) {
+          const efficiencyRatio = avgCompletionTime / faultTypeAvgTime;
+          if (efficiencyRatio > 1) {
+            score += Math.min((efficiencyRatio - 1) * 20, 10);
+          }
+        }
+      } else {
+        const faultTypeConfig = faultTypes.find((f: FaultType) => f.code === targetFaultType || f.name === targetFaultType);
+        if (faultTypeConfig) {
+          const hasRequiredSkill = faultTypeConfig.requiredSkills.length === 0 ||
+            Math.random() > 0.3;
+          if (hasRequiredSkill) {
+            score += 5;
+          }
+        }
       }
 
-      const workloadScore = Math.max(0, 100 - currentWorkload * 15);
-      score += workloadScore * 0.2;
+      const workloadScore = Math.max(0, 100 - currentWorkload * 20) * 0.25;
+      score += workloadScore;
 
       if (avgCompletionTime > 0) {
-        const efficiencyScore = Math.max(0, 100 - avgCompletionTime / (1000 * 60 * 60));
-        score += efficiencyScore * 0.1;
+        const avgHours = avgCompletionTime / (1000 * 60 * 60);
+        const efficiencyScore = Math.max(0, 100 - avgHours * 8) * 0.15;
+        score += efficiencyScore;
       }
 
-      if (isUrgent && currentWorkload === 0) {
-        score += 50;
+      let urgentBonus = 0;
+      if (isUrgent) {
+        if (currentWorkload === 0) {
+          urgentBonus += 40;
+        } else {
+          const workloadReverse = Math.max(0, 30 - currentWorkload * 10);
+          urgentBonus += workloadReverse;
+        }
+        if (faultTypeMatchCount > 0 && faultTypeAvgTime > 0) {
+          const faultTypeHours = faultTypeAvgTime / (1000 * 60 * 60);
+          urgentBonus += Math.max(0, 30 - faultTypeHours * 10);
+        }
+        score += urgentBonus;
       }
 
       scoredMaintainers.push({
@@ -135,11 +182,24 @@ export class WorkOrderService {
         currentWorkload,
         avgCompletionTime,
         sameArea,
-        hasSkill,
+        faultTypeMatchCount,
+        faultTypeAvgTime,
+        urgentBonus,
       });
     }
 
-    scoredMaintainers.sort((a, b) => b.score - a.score);
+    scoredMaintainers.sort((a, b) => {
+      if (isUrgent) {
+        if (a.currentWorkload !== b.currentWorkload) {
+          return a.currentWorkload - b.currentWorkload;
+        }
+        if (a.faultTypeAvgTime > 0 && b.faultTypeAvgTime > 0) {
+          return a.faultTypeAvgTime - b.faultTypeAvgTime;
+        }
+        return b.score - a.score;
+      }
+      return b.score - a.score;
+    });
 
     return scoredMaintainers.length > 0 ? scoredMaintainers[0].maintainer : null;
   }
@@ -268,11 +328,16 @@ export class WorkOrderService {
 
   static async completeWorkOrder(
     orderId: string,
+    maintainerId: string,
     data: CompleteWorkOrderData
   ): Promise<WorkOrder | null> {
     const workOrder = await workOrderRepository.findOne({ where: { id: orderId } });
     if (!workOrder) {
       return null;
+    }
+
+    if (workOrder.maintainerId !== maintainerId) {
+      throw new Error('权限不足：只能完成您名下的工单');
     }
 
     if (workOrder.status !== WorkOrderStatus.PROCESSING) {
@@ -310,6 +375,14 @@ export class WorkOrderService {
       `工单 ${savedOrder.orderNo} 已完成，待审核`,
       NotificationType.WORK_ORDER
     );
+    if (savedOrder.maintainerId) {
+      await this.sendNotification(
+        savedOrder,
+        savedOrder.maintainerId,
+        `您的工单 ${savedOrder.orderNo} 已提交审核，请等待管理员审核`,
+        NotificationType.WORK_ORDER
+      );
+    }
 
     return savedOrder;
   }
@@ -350,10 +423,17 @@ export class WorkOrderService {
       await this.sendNotification(
         savedOrder,
         workOrder.maintainerId,
-        `工单 ${savedOrder.orderNo} 审核${pass ? '通过' : '未通过'}`,
+        `工单 ${savedOrder.orderNo} 审核${pass ? '通过' : '未通过'}` +
+          (pass ? '' : `，请重新处理。原因：${remark || '未通过审核'}`),
         NotificationType.WORK_ORDER
       );
     }
+    await this.sendNotification(
+      savedOrder,
+      null,
+      `工单 ${savedOrder.orderNo} 已${pass ? '审核通过，路灯恢复正常' : '审核未通过，退回重处理'}`,
+      NotificationType.WORK_ORDER
+    );
 
     return savedOrder;
   }
@@ -539,31 +619,23 @@ export class WorkOrderService {
     type: NotificationType
   ): Promise<void> {
     if (userId) {
-      const notification = notificationRepository.create({
+      await NotificationService.createNotification(
         userId,
         type,
-        title: '工单通知',
+        '工单通知',
         content,
-        relatedId: workOrder.id,
-        relatedType: RelatedType.WORK_ORDER,
-      });
-      await notificationRepository.save(notification);
+        workOrder.id,
+        RelatedType.WORK_ORDER
+      );
     } else {
-      const admins = await userRepository.find({
-        where: { role: UserRole.ADMIN, status: true },
-      });
-
-      for (const admin of admins) {
-        const notification = notificationRepository.create({
-          userId: admin.id,
-          type,
-          title: '工单通知',
-          content,
-          relatedId: workOrder.id,
-          relatedType: RelatedType.WORK_ORDER,
-        });
-        await notificationRepository.save(notification);
-      }
+      await NotificationService.createNotificationForRole(
+        UserRole.ADMIN,
+        type,
+        '工单通知',
+        content,
+        workOrder.id,
+        RelatedType.WORK_ORDER
+      );
     }
   }
 }

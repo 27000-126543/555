@@ -15,6 +15,7 @@ import dayjs from 'dayjs';
 const PDFDocument = require('pdfkit');
 import * as fs from 'fs';
 import * as path from 'path';
+import { NotificationService } from './notification.service';
 
 const financialReportRepository = AppDataSource.getRepository(FinancialReport);
 const workOrderRepository = AppDataSource.getRepository(WorkOrder);
@@ -474,36 +475,35 @@ export class FinanceService {
   }
 
   private static async notifyAdmins(month: string): Promise<void> {
-    const admins = await userRepository.find({
-      where: { role: In([UserRole.ADMIN, UserRole.FINANCE]), status: true },
-    });
-
-    for (const admin of admins) {
-      const notification = notificationRepository.create({
-        userId: admin.id,
-        type: NotificationType.SYSTEM,
-        title: '月度财务报表已生成',
-        content: `${month} 月份财务报表已生成，请及时查看。`,
-        relatedType: RelatedType.MAINTENANCE_RECORD,
-      });
-      await notificationRepository.save(notification);
+    const roles = [UserRole.ADMIN, UserRole.FINANCE];
+    for (const role of roles) {
+      await NotificationService.createNotificationForRole(
+        role,
+        NotificationType.REPORT,
+        '月度财务报表已生成',
+        `${month} 月份财务报表已生成，包含故障率、平均修复时长、能耗费用、绩效评分等数据，请及时查看详情并下载凭证。`,
+        month,
+        RelatedType.MAINTENANCE_RECORD
+      );
     }
   }
 
   private static async notifyPerformanceComparison(comparison: PerformanceComparison): Promise<void> {
-    const admins = await userRepository.find({
-      where: { role: In([UserRole.ADMIN, UserRole.FINANCE]), status: true },
-    });
+    const content = `${comparison.month} 月份区域绩效对比报表已生成：平均评分 ${comparison.averageScore} 分` +
+      (comparison.bestPerformer ? `，最佳区域：${comparison.bestPerformer.area}（${comparison.bestPerformer.performanceScore}分）` : '') +
+      (comparison.worstPerformer ? `，待改进区域：${comparison.worstPerformer.area}（${comparison.worstPerformer.performanceScore}分）` : '') +
+      '，请查看详情并下载绩效对比凭证。';
 
-    for (const admin of admins) {
-      const notification = notificationRepository.create({
-        userId: admin.id,
-        type: NotificationType.SYSTEM,
-        title: '区域绩效对比报表已生成',
-        content: `${comparison.month} 月份区域绩效对比报表已生成，平均评分：${comparison.averageScore} 分。`,
-        relatedType: RelatedType.MAINTENANCE_RECORD,
-      });
-      await notificationRepository.save(notification);
+    const roles = [UserRole.ADMIN, UserRole.FINANCE];
+    for (const role of roles) {
+      await NotificationService.createNotificationForRole(
+        role,
+        NotificationType.REPORT,
+        '区域绩效对比报表已生成',
+        content,
+        comparison.month,
+        RelatedType.MAINTENANCE_RECORD
+      );
     }
   }
 

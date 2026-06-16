@@ -56,10 +56,18 @@ export interface BudgetMonitorResult {
   actualConsumption: number;
   budget: number;
   deviation: number;
+  deviationPercent: string;
   deviationThreshold: number;
   isOverBudget: boolean;
+  isOverThreshold: boolean;
   isLocked: boolean;
   alertCreated: boolean;
+  details: {
+    budgetKwh: string;
+    actualKwh: string;
+    diffKwh: string;
+    percentText: string;
+  };
 }
 
 export class EnergyService {
@@ -172,24 +180,27 @@ export class EnergyService {
 
     const actualConsumption = await this.calculateDailyEnergyByArea(area, date);
     const budget = areaConfig.dailyEnergyBudget;
-    const deviation = budget > 0 ? ((actualConsumption - budget) / budget) * 100 : 0;
-    const isOverBudget = Math.abs(deviation) > budgetDeviationThreshold;
+    const diff = actualConsumption - budget;
+    const deviationPercentNum = budget > 0 ? (diff / budget) * 100 : 0;
+    const isOverBudget = actualConsumption > budget;
+    const isOverThreshold = deviationPercentNum > budgetDeviationThreshold;
 
     let isLocked = areaConfig.isLocked;
     let alertCreated = false;
 
-    if (isOverBudget && !areaConfig.isLocked) {
+    if (isOverThreshold && !areaConfig.isLocked) {
       areaConfig.isLocked = true;
-      areaConfig.lockReason = `能耗超出预算${deviation.toFixed(2)}%`;
+      areaConfig.lockReason = `能耗超出预算${deviationPercentNum.toFixed(2)}%，超过阈值${budgetDeviationThreshold}%`;
       await areaConfigRepository.save(areaConfig);
       isLocked = true;
 
+      const startOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
       const existingAlert = await energyAlertRepository.findOne({
         where: {
           area,
           alertType: AlertType.DAILY_OVER_BUDGET,
           isHandled: false,
-          createdAt: MoreThanOrEqual(new Date(date.getFullYear(), date.getMonth(), date.getDate())),
+          createdAt: MoreThanOrEqual(startOfDay),
         },
       });
 
@@ -197,28 +208,22 @@ export class EnergyService {
         const alert = energyAlertRepository.create({
           area,
           alertType: AlertType.DAILY_OVER_BUDGET,
-          message: `${area} 区域 ${date.toLocaleDateString()} 能耗超出预算 ${deviation.toFixed(2)}%`,
+          message: `${area} 区域 ${date.toLocaleDateString()} 能耗 ${actualConsumption.toFixed(2)} kWh，超出预算 ${deviationPercentNum.toFixed(2)}%`,
           threshold: budgetDeviationThreshold,
-          actualValue: deviation,
+          actualValue: deviationPercentNum,
           isHandled: false,
         });
-        await energyAlertRepository.save(alert);
+        const savedAlert = await energyAlertRepository.save(alert);
         alertCreated = true;
 
-        const admins = await userRepository.find({
-          where: { role: UserRole.ADMIN, status: true },
-        });
-
-        for (const admin of admins) {
-          await NotificationService.createNotification(
-            admin.id,
-            NotificationType.ENERGY_ALERT,
-            '能耗预警',
-            `${area} 区域能耗超出预算 ${deviation.toFixed(2)}%，已锁定区域配置`,
-            alert.id,
-            RelatedType.ENERGY_ALERT
-          );
-        }
+        await NotificationService.createNotificationForRole(
+          UserRole.ADMIN,
+          NotificationType.ENERGY_ALERT,
+          '能耗预警',
+          `${area} 区域日能耗 ${actualConsumption.toFixed(2)}kWh，预算 ${budget.toFixed(2)}kWh，超出 ${deviationPercentNum.toFixed(2)}%，已自动锁定区域配置`,
+          savedAlert.id,
+          RelatedType.ENERGY_ALERT
+        );
       }
     }
 
@@ -227,11 +232,20 @@ export class EnergyService {
       date: date.toISOString().split('T')[0],
       actualConsumption,
       budget,
-      deviation,
+      deviation: diff,
+      deviationPercent: `${deviationPercentNum.toFixed(2)}%`,
       deviationThreshold: budgetDeviationThreshold,
       isOverBudget,
+      isOverThreshold,
       isLocked,
       alertCreated,
+      details: {
+        budgetKwh: `${budget.toFixed(2)} kWh`,
+        actualKwh: `${actualConsumption.toFixed(2)} kWh`,
+        diffKwh: `${diff >= 0 ? '+' : ''}${diff.toFixed(2)} kWh`,
+        percentText: `${deviationPercentNum >= 0 ? '超出' : '低于'}预算 ${Math.abs(deviationPercentNum).toFixed(2)}%` +
+          (isOverThreshold ? `，已超过阈值 ${budgetDeviationThreshold}%` : ''),
+      },
     };
   }
 
@@ -248,9 +262,10 @@ export class EnergyService {
       const today = new Date();
       const actualConsumption = await this.calculateDailyEnergyByArea(alert.area, today);
       const budget = areaConfig.dailyEnergyBudget;
-      const deviation = budget > 0 ? ((actualConsumption - budget) / budget) * 100 : 0;
+      const diff = actualConsumption - budget;
+      const deviationPercentNum = budget > 0 ? (diff / budget) * 100 : 0;
 
-      if (Math.abs(deviation) <= budgetDeviationThreshold && areaConfig.isLocked) {
+      if (deviationPercentNum <= budgetDeviationThreshold && areaConfig.isLocked) {
         areaConfig.isLocked = false;
         areaConfig.lockReason = '';
         await areaConfigRepository.save(areaConfig);
@@ -259,6 +274,15 @@ export class EnergyService {
         alert.handledBy = undefined as any;
         alert.handledAt = new Date();
         await energyAlertRepository.save(alert);
+
+        await NotificationService.createNotificationForRole(
+          UserRole.ADMIN,
+          NotificationType.ENERGY_ALERT,
+          '能耗预警解除',
+          `${alert.area} 区域能耗已恢复正常，区域配置已解锁`,
+          alert.id,
+          RelatedType.ENERGY_ALERT
+        );
       }
     }
   }

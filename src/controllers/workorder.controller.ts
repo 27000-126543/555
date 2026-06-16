@@ -155,13 +155,13 @@ export class WorkOrderController {
         laborCost: laborCost ? parseFloat(laborCost) : 0,
       };
 
-      const workOrder = await WorkOrderService.completeWorkOrder(id, data);
+      const workOrder = await WorkOrderService.completeWorkOrder(id, user.userId, data);
 
       if (!workOrder) {
         return res.status(HttpStatus.NOT_FOUND).json(error('工单不存在', HttpStatus.NOT_FOUND));
       }
 
-      return res.json(success(workOrder, '工单已完成'));
+      return res.json(success(workOrder, '工单已提交审核'));
     } catch (err) {
       next(err);
     }

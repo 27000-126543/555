@@ -7,6 +7,7 @@ export enum NotificationType {
   ENERGY_ALERT = 'energy_alert',
   SYSTEM = 'system',
   MAINTENANCE = 'maintenance',
+  REPORT = 'report',
 }
 
 export enum RelatedType {
